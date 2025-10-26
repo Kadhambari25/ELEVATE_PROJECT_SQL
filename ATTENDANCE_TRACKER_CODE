@@ -1,0 +1,275 @@
+CREATE DATABASE ems_db;
+USE ems_db;
+-- Departments Table
+CREATE TABLE departments (
+  dept_id SERIAL PRIMARY KEY,
+  dept_name VARCHAR(50) NOT NULL
+);
+
+-- Roles Table
+CREATE TABLE roles (
+  role_id SERIAL PRIMARY KEY,
+  role_name VARCHAR(50),
+  salary NUMERIC(10,2)
+);
+
+-- Employees Table
+CREATE TABLE employees (
+  emp_id SERIAL PRIMARY KEY,
+  name VARCHAR(100),
+  dept_id INT REFERENCES departments(dept_id),
+  role_id INT REFERENCES roles(role_id),
+  doj DATE,
+  email VARCHAR(100),
+  phone VARCHAR(15)
+);
+
+-- Attendance Table
+CREATE TABLE attendance (
+  att_id SERIAL PRIMARY KEY,
+  emp_id INT REFERENCES employees(emp_id),
+  date DATE,
+  in_time TIME,
+  out_time TIME,
+  status VARCHAR(20)
+);
+
+-- Departments
+INSERT INTO departments (dept_name) VALUES
+('Human Resources'),
+('Information Technology'),
+('Finance'),
+('Sales'),
+('Operations');
+
+-- Roles
+INSERT INTO roles (role_name, salary) VALUES
+('Manager', 80000.00),
+('Developer', 60000.00),
+('Analyst', 55000.00),
+('Intern', 20000.00),
+('Executive', 45000.00);
+
+-- Employees Table Dummy Data (200 records)
+
+DELIMITER $$
+
+CREATE PROCEDURE insert_dummy_employees()
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    WHILE i <= 200 DO
+        INSERT INTO employees (name, dept_id, role_id, doj, email, phone)
+        VALUES (
+            CONCAT('Employee_', i),
+            (i MOD 5) + 1,           -- dept_id cycles 1–5
+            (i MOD 5) + 1,           -- role_id cycles 1–5
+            DATE_ADD('2021-01-01', INTERVAL (i MOD 365) DAY),  -- doj
+            CONCAT('employee', i, '@company.com'),
+            CONCAT('98765', LPAD(i, 5, '0'))
+        );
+        SET i = i + 1;
+    END WHILE;
+END $$
+
+DELIMITER ;
+
+-- Execute the procedure
+CALL insert_dummy_employees();
+
+DELIMITER $$
+
+CREATE PROCEDURE insert_dummy_attendance()
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    WHILE i <= 200 DO
+        INSERT INTO attendance (emp_id, date, in_time, out_time, status)
+        VALUES (
+            i,
+            CURRENT_DATE,  -- Today's date
+            TIME(CONCAT('09:', LPAD(FLOOR(RAND()*30),2,'0'), ':00')),  -- Random in_time 09:00–09:29
+            TIME(CONCAT('17:', LPAD(FLOOR(RAND()*30),2,'0'), ':00')),  -- Random out_time 17:00–17:29
+            CASE
+                WHEN RAND() < 0.1 THEN 'Absent'
+                WHEN RAND() < 0.3 THEN 'Late'
+                ELSE 'Present'
+            END
+        );
+        SET i = i + 1;
+    END WHILE;
+END $$
+
+DELIMITER ;
+
+-- Execute the procedure
+CALL insert_dummy_attendance();
+
+-- 3. monthly arrival
+SELECT 
+    e.emp_id, 
+    e.name, 
+    COUNT(*) AS days_present
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+WHERE 
+    MONTH(a.date) = MONTH(CURDATE())   -- Current month
+    AND YEAR(a.date) = YEAR(CURDATE()) -- Current year
+    AND a.status = 'Present'
+GROUP BY 
+    e.emp_id, e.name
+ORDER BY 
+    days_present DESC;
+
+
+-- 3. late arrival
+
+SELECT 
+    e.emp_id, 
+    e.name, 
+    COUNT(*) AS late_days
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+WHERE 
+    MONTH(a.date) = MONTH(CURDATE())
+    AND YEAR(a.date) = YEAR(CURDATE())
+    AND a.status = 'Late'
+GROUP BY 
+    e.emp_id, e.name
+HAVING 
+    late_days > 0
+ORDER BY 
+    late_days DESC;
+
+-- 4. triggers for timestamp and status
+DELIMITER $$
+
+CREATE TRIGGER attendance_timestamp_status
+BEFORE INSERT ON attendance
+FOR EACH ROW
+BEGIN
+    -- If in_time not provided, set current time
+    IF NEW.in_time IS NULL THEN
+        SET NEW.in_time = CURRENT_TIME();
+    END IF;
+
+    -- If out_time not provided, set default end of day (17:00:00)
+    IF NEW.out_time IS NULL THEN
+        SET NEW.out_time = '17:00:00';
+    END IF;
+
+    -- Set status based on in_time
+    IF NEW.in_time > '09:15:00' THEN
+        SET NEW.status = 'Late';
+    ELSE
+        SET NEW.status = 'Present';
+    END IF;
+
+    -- If employee didn't check in at all, mark Absent
+    IF NEW.in_time IS NULL THEN
+        SET NEW.status = 'Absent';
+    END IF;
+END $$
+
+DELIMITER ;
+
+-- 5. function to calculate total work hours
+-- create function
+DELIMITER $$
+
+CREATE FUNCTION work_hours(in_time TIME, out_time TIME)
+RETURNS DECIMAL(5,2)
+DETERMINISTIC
+BEGIN
+    RETURN ROUND(TIMESTAMPDIFF(MINUTE, in_time, out_time)/60, 2);
+END $$
+
+DELIMITER ;
+-- run total work  hours
+SELECT 
+    e.emp_id, 
+    e.name, 
+    SUM(work_hours(a.in_time, a.out_time)) AS total_hours
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+GROUP BY 
+    e.emp_id, e.name
+ORDER BY 
+    total_hours DESC;
+-- 5. generate reports using group by and having 
+-- monthly attendance report days present per employee
+SELECT 
+    e.emp_id, 
+    e.name, 
+    COUNT(*) AS days_present
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+WHERE 
+    MONTH(a.date) = MONTH(CURDATE())   -- Current month
+    AND YEAR(a.date) = YEAR(CURDATE()) -- Current year
+    AND a.status = 'Present'
+GROUP BY 
+    e.emp_id, e.name
+HAVING 
+    days_present > 0
+ORDER BY 
+    days_present DESC;
+-- late arrival report days late per employee
+
+SELECT 
+    e.emp_id, 
+    e.name, 
+    COUNT(*) AS late_days
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+WHERE 
+    MONTH(a.date) = MONTH(CURDATE())
+    AND YEAR(a.date) = YEAR(CURDATE())
+    AND a.status = 'Late'
+GROUP BY 
+    e.emp_id, e.name
+HAVING 
+    late_days > 0
+ORDER BY 
+    late_days DESC;
+
+-- total work hours report using function
+
+SELECT 
+    e.emp_id, 
+    e.name, 
+    SUM(work_hours(a.in_time, a.out_time)) AS total_hours
+FROM 
+    employees e
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+GROUP BY 
+    e.emp_id, e.name
+HAVING 
+    total_hours > 0
+ORDER BY 
+    total_hours DESC;
+
+-- department wwise attendance report 
+SELECT 
+    d.dept_name,
+    COUNT(*) AS total_present
+FROM 
+    departments d
+JOIN 
+    employees e ON d.dept_id = e.dept_id
+JOIN 
+    attendance a ON e.emp_id = a.emp_id
+WHERE a.status = 'Present'
+GROUP BY d.dept_name
+HAVING total_present > 0
+ORDER BY total_present DESC;
+
